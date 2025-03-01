@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>D3 Document Visualization Tool</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="document-list">
+            <h2>Document IDs</h2>
+            <div class="btn-container">
+                <span class="clear-btn" id="clear-selection">Clear Filter</span>
+                <span class="clear-btn" id="clear-workspace">Clear Workspace</span>
+            </div>
+            <ul id="document-list"></ul>
+        </div>
+        <div class="workspace" id="workspace">
+            <h2>Document Workspace</h2>
+            <svg id="svg-container"></svg>
+        </div>
+    </div>
+
+    <!-- Minimized bar for documents -->
+    <div id="minimized-bar">
+        <div id="minimized-docs"></div>
+    </div>
+
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script>
+        const DOCS_PATH = 'dataset/dataset';
+        const listSelector = d3.select('#document-list');
+        const workspace = d3.select('#workspace');
+        const svg = d3.select('#svg-container');
+        const minimizedContainer = d3.select('#minimized-docs');
+        const minimizedBar = d3.select('#minimized-bar');
+
+        function resizeSvg() {
+            const w = workspace.node().clientWidth || 0;
+            const h = workspace.node().clientHeight || 0;
+            svg.attr('width', w).attr('height', h);
+        }
+        window.addEventListener('resize', resizeSvg);
+        resizeSvg();
+
+        let selectedItems = new Set();
+        let docOffset = 0;
+
+        // Fetch file names from JSON
+        d3.json(`${DOCS_PATH}/filelist.json`)
+            .then(data => {
+                listSelector.selectAll('li')
+                    .data(data.files)
+                    .enter()
+                    .append('li')
+                    .attr('data-id', d => d)
+                    .text(d => d)
+                    .on('click', (event, d) => handleSelection(event, d));
+            })
+            .catch(err => {
+                console.error('Error loading fileList.json:', err);
+            });
+
+        function handleSelection(event, dataId) {
+            if (event.ctrlKey || event.metaKey) toggleSelection(dataId);
+            else if (event.shiftKey) shiftSelect(dataId);
+            else {
+                clearSelection();
+                selectItem(dataId);
+            }
+            openDocuments(Array.from(selectedItems));
+        }
+
+        function toggleSelection(dataId) {
+            if (selectedItems.has(dataId)) {
+                selectedItems.delete(dataId);
+                markSelected(dataId, false);
+            } else {
+                selectedItems.add(dataId);
+                markSelected(dataId, true);
+            }
+        }
+
+        function selectItem(dataId) {
+            selectedItems.add(dataId);
+            markSelected(dataId, true);
+        }
+
+        function shiftSelect(dataId) {
+            const items = listSelector.selectAll('li').nodes();
+            const lastSelectedIndex = items.findIndex(li => li.classList.contains('selected'));
+            const thisIndex = items.findIndex(li => li.getAttribute('data-id') === dataId);
+            if (lastSelectedIndex !== -1) {
+                const start = Math.min(lastSelectedIndex, thisIndex);
+                const end = Math.max(lastSelectedIndex, thisIndex);
+                clearSelection();
+                for (let i = start; i <= end; i++) {
+                    const id = items[i].getAttribute('data-id');
+                    selectedItems.add(id);
+                    markSelected(id, true);
+                }
+            } else {
+                selectItem(dataId);
+            }
+        }
+
+        function clearSelection() {
+            selectedItems.forEach(id => markSelected(id, false));
+            selectedItems.clear();
+        }
+
+        function markSelected(dataId, isSelected) {
+            listSelector.selectAll('li')
+                .filter(d => d === dataId)
+                .classed('selected', isSelected);
+        }
+
+        d3.select('#clear-selection').on('click', () => {
+            clearSelection();
+        });
+
+        d3.select('#clear-workspace').on('click', () => {
+            workspace.selectAll('.document-window').remove();
+            minimizedContainer.selectAll('.minimized-doc').remove();
+            minimizedBar.style('display', 'none'); // Hide minimized bar
+            docOffset = 0;
+        });
+
+        async function openDocuments(ids) {
+            for (const id of ids) {
+                if (!document.getElementById(id)) {
+                    try {
+                        const response = await fetch(`${DOCS_PATH}/${id}`);
+                        if (!response.ok) throw new Error('File not found');
+                        const content = await response.text();
+
+                        const docWin = workspace.append('div')
+                            .attr('class', 'document-window')
+                            .attr('id', id)
+                            .style('left', docOffset + 'px')
+                            .style('top', docOffset + 'px')
+                            .style('z-index', docOffset + 1);
+
+                        docOffset += 20;
+
+                        // Header with minimize & close
+                        const header = docWin.append('div')
+                            .attr('class', 'document-header');
+
+                        header.append('span')
+                            .attr('class', 'doc-title')
+                            .text(id);
+
+                        header.append('span')
+                            .attr('class', 'minimize-button')
+                            .on('click', () => minimizeDoc(id));
+
+                        header.append('span')
+                            .attr('class', 'close-button')
+                            .on('click', () => docWin.remove());
+
+                        docWin.append('div')
+                            .attr('class', 'document-content')
+                            .text(content);
+
+                        docWin.call(d3.drag().on('drag', (event) => {
+                            const x = parseInt(docWin.style('left')) || 0;
+                            const y = parseInt(docWin.style('top')) || 0;
+                            docWin.style('left', `${x + event.dx}px`);
+                            docWin.style('top', `${y + event.dy}px`);
+                        }));
+                    } catch (error) {
+                        console.error(`Error loading ${id}:`, error);
+                    }
+                }
+            }
+        }
+
+        function minimizeDoc(docId) {
+            const docWin = d3.select('#' + docId);
+            if (!docWin.empty()) {
+                // Remove from workspace
+                docWin.remove();
+                // Add to minimized bar
+                minimizedContainer.append('div')
+                    .attr('class', 'minimized-doc')
+                    .text(docId)
+                    .on('click', () => restoreDoc(docId));
+                minimizedBar.style('display', 'block'); // Show minimized bar
+            }
+        }
+
+        function restoreDoc(docId) {
+            minimizedContainer
+                .selectAll('.minimized-doc')
+                .filter(function() {
+                    return d3.select(this).text() === docId;
+                })
+                .remove();
+
+            // Restore the document by re-opening it
+            openDocuments([docId]);
+
+            // Hide minimized bar if no documents are minimized
+            if (minimizedContainer.selectAll('.minimized-doc').empty()) {
+                minimizedBar.style('display', 'none');
+            }
+        }
+    </script>
+</body>
+</html>
